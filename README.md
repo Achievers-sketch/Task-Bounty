@@ -1,4 +1,4 @@
-##TaskBounty – Decentralized Task & Reward Board on Stellar
+##TaskBounty – Decentralized Task & Reward Board on Stellar ##
 A trustless, decentralized platform for posting tasks, submitting work, and managing bounty payments on the Stellar blockchain using Soroban smart contracts.
 
 🎯 Problem
