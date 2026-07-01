@@ -2,17 +2,17 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
+    testutils::{Address as _, Ledger},
     token, Address, Env, String,
 };
 use types::{TaskStatus, SubmissionStatus};
 
-fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
-    let token_address = env.register_stellar_asset_contract(admin.clone());
-    token::Client::new(env, &token_address)
+fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
+    let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+    token::StellarAssetClient::new(env, &token_contract.address())
 }
 
-fn setup_test() -> (Env, Address, Address, Address, token::Client<'static>, Address) {
+fn setup_test() -> (Env, Address, Address, Address, token::StellarAssetClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -49,7 +49,7 @@ fn test_create_task() {
         &poster,
         &title,
         &description,
-        &token_client.address,
+        &token_client.address(),
         &reward,
         &deadline,
         &3,
@@ -419,4 +419,83 @@ fn test_get_total_tasks() {
     );
 
     assert_eq!(client.get_total_tasks(), 2);
+}
+
+#[test]
+fn test_task_search_and_filtering() {
+    let (env, poster, contributor, _, token_client, contract_id) = setup_test();
+    let client = TaskBountyContractClient::new(&env, &contract_id);
+
+    let base_deadline = env.ledger().timestamp();
+
+    let first_id = client.create_task(
+        &poster,
+        &String::from_str(&env, "Write docs"),
+        &String::from_str(&env, "Document the API surface"),
+        &token_client.address(),
+        &10_000_000,
+        &(base_deadline + 3_600),
+        &2,
+    );
+
+    let second_id = client.create_task(
+        &poster,
+        &String::from_str(&env, "Build dashboard"),
+        &String::from_str(&env, "Filter tasks by status and reward"),
+        &token_client.address(),
+        &50_000_000,
+        &(base_deadline + 7_200),
+        &2,
+    );
+
+    let third_id = client.create_task(
+        &poster,
+        &String::from_str(&env, "Fix payout"),
+        &String::from_str(&env, "Verify deadline handling"),
+        &token_client.address,
+        &50_000_000,
+        &(base_deadline + 3_900),
+        &2,
+    );
+
+    let submission_id = client.submit_work(
+        &second_id,
+        &contributor,
+        &String::from_str(&env, "ipfs://dashboard"),
+        &String::from_str(&env, "First pass implementation"),
+    );
+
+    assert_eq!(client.get_all_tasks().len(), 3);
+
+    let open_tasks = client.get_tasks_by_status(&TaskStatus::Open);
+    assert_eq!(open_tasks.len(), 2);
+    assert_eq!(open_tasks.get(0).unwrap().id, first_id);
+    assert_eq!(open_tasks.get(1).unwrap().id, third_id);
+
+    let in_progress = client.get_tasks_by_status(&TaskStatus::InProgress);
+    assert_eq!(in_progress.len(), 1);
+    assert_eq!(in_progress.get(0).unwrap().id, second_id);
+
+    let reward_matches = client.get_tasks_by_reward(&50_000_000);
+    assert_eq!(reward_matches.len(), 2);
+    assert_eq!(reward_matches.get(0).unwrap().id, second_id);
+    assert_eq!(reward_matches.get(1).unwrap().id, third_id);
+
+    let min_reward = client.get_tasks_by_min_reward(&50_000_000);
+    assert_eq!(min_reward.len(), 2);
+
+    let deadline_matches = client.get_tasks_before_deadline(&(base_deadline + 4_000));
+    assert_eq!(deadline_matches.len(), 2);
+    assert_eq!(deadline_matches.get(0).unwrap().id, first_id);
+    assert_eq!(deadline_matches.get(1).unwrap().id, third_id);
+
+    let title_search = client.search_tasks(&String::from_str(&env, "dashboard"));
+    assert_eq!(title_search.len(), 1);
+    assert_eq!(title_search.get(0).unwrap().id, second_id);
+
+    let description_search = client.search_tasks(&String::from_str(&env, "deadline handling"));
+    assert_eq!(description_search.len(), 1);
+    assert_eq!(description_search.get(0).unwrap().id, third_id);
+
+    let _ = submission_id;
 }
