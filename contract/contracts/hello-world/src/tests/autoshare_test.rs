@@ -1706,3 +1706,95 @@ fn test_create_group_with_payment() {
     assert_eq!(details.usage_count, usage_count);
     assert_eq!(details.total_usages_paid, usage_count);
 }
+
+#[test]
+fn test_reward_payment_records_exact_amount_and_contract_balance() {
+    let test_env = setup_test_env();
+    let client = AutoShareContractClient::new(&test_env.env, &test_env.autoshare_contract);
+
+    let creator = test_env.users.get(0).unwrap().clone();
+    let token_address = test_env.mock_tokens.get(0).unwrap().clone();
+    let token_client = MockTokenClient::new(&test_env.env, &token_address);
+    let usage_fee = 25u32;
+    let usage_count = 4u32;
+    let expected_amount = (usage_fee as i128) * (usage_count as i128);
+
+    client.set_usage_fee(&usage_fee, &test_env.admin);
+    crate::test_utils::mint_tokens(&test_env.env, &token_address, &creator, 1_000);
+
+    let id = BytesN::from_array(&test_env.env, &[67u8; 32]);
+    let name = String::from_str(&test_env.env, "Reward Amount Audit");
+
+    client.create(&id, &name, &creator, &usage_count, &token_address);
+
+    let user_history = client.get_user_payment_history(&creator);
+    let group_history = client.get_group_payment_history(&id);
+
+    assert_eq!(user_history.len(), 1);
+    assert_eq!(group_history.len(), 1);
+    assert_eq!(user_history.get(0).unwrap().usages_purchased, usage_count);
+    assert_eq!(user_history.get(0).unwrap().amount_paid, expected_amount);
+    assert_eq!(group_history.get(0).unwrap().amount_paid, expected_amount);
+    assert_eq!(token_client.balance(&creator), 1_000 - expected_amount);
+    assert_eq!(client.get_contract_balance(&token_address), expected_amount);
+}
+
+#[test]
+#[should_panic]
+fn test_reward_topup_rejects_zero_usage_amount() {
+    let test_env = setup_test_env();
+    let client = AutoShareContractClient::new(&test_env.env, &test_env.autoshare_contract);
+
+    let creator = test_env.users.get(0).unwrap().clone();
+    let payer = test_env.users.get(1).unwrap().clone();
+    let token_address = test_env.mock_tokens.get(0).unwrap().clone();
+
+    crate::test_utils::mint_tokens(&test_env.env, &token_address, &creator, 1_000);
+    crate::test_utils::mint_tokens(&test_env.env, &token_address, &payer, 1_000);
+
+    let id = BytesN::from_array(&test_env.env, &[68u8; 32]);
+    let name = String::from_str(&test_env.env, "Reject Zero Topup");
+    client.create(&id, &name, &creator, &1u32, &token_address);
+
+    client.topup_subscription(&id, &0u32, &token_address, &payer);
+}
+
+#[test]
+fn test_multiple_contributors_record_separate_reward_payments() {
+    let test_env = setup_test_env();
+    let client = AutoShareContractClient::new(&test_env.env, &test_env.autoshare_contract);
+
+    let creator = test_env.users.get(0).unwrap().clone();
+    let contributor = test_env.users.get(1).unwrap().clone();
+    let token_address = test_env.mock_tokens.get(0).unwrap().clone();
+    let token_client = MockTokenClient::new(&test_env.env, &token_address);
+
+    crate::test_utils::mint_tokens(&test_env.env, &token_address, &creator, 1_000);
+    crate::test_utils::mint_tokens(&test_env.env, &token_address, &contributor, 1_000);
+
+    let id = BytesN::from_array(&test_env.env, &[69u8; 32]);
+    let name = String::from_str(&test_env.env, "Multi Contributor Rewards");
+
+    client.create(&id, &name, &creator, &2u32, &token_address);
+    client.topup_subscription(&id, &3u32, &token_address, &contributor);
+
+    let group_history = client.get_group_payment_history(&id);
+    let creator_history = client.get_user_payment_history(&creator);
+    let contributor_history = client.get_user_payment_history(&contributor);
+    let details = client.get(&id);
+
+    assert_eq!(group_history.len(), 2);
+    assert_eq!(creator_history.len(), 1);
+    assert_eq!(contributor_history.len(), 1);
+    assert_eq!(group_history.get(0).unwrap().user, creator);
+    assert_eq!(group_history.get(0).unwrap().usages_purchased, 2);
+    assert_eq!(group_history.get(0).unwrap().amount_paid, 20);
+    assert_eq!(group_history.get(1).unwrap().user, contributor);
+    assert_eq!(group_history.get(1).unwrap().usages_purchased, 3);
+    assert_eq!(group_history.get(1).unwrap().amount_paid, 30);
+    assert_eq!(details.usage_count, 5);
+    assert_eq!(details.total_usages_paid, 5);
+    assert_eq!(token_client.balance(&creator), 980);
+    assert_eq!(token_client.balance(&contributor), 970);
+    assert_eq!(client.get_contract_balance(&token_address), 50);
+}
